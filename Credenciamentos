@@ -1,0 +1,180 @@
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import (
+    ElementClickInterceptedException,
+    StaleElementReferenceException
+)
+from selenium.webdriver.common.keys import Keys
+from webdriver_manager.chrome import ChromeDriverManager
+import openpyxl
+from datetime import datetime
+import os
+import json
+import glob
+import time
+
+# Caminho da planilha
+caminho_planilha = r'H:\\Meu Drive\\Clientes\\UNION\\Bases\\BASE UNION.xlsx'
+try:
+    workbook = openpyxl.load_workbook(caminho_planilha)
+    base_sheet = workbook['Base - Credenciamentos']
+except FileNotFoundError:
+    print(f"Arquivo não encontrado: {caminho_planilha}")
+    exit(1)
+
+# Pasta onde os PDFs serão salvos
+pasta_destino = r'I:\Drives compartilhados\Operacional\1. Hefsys\3. CREDENCIAMENTOS\2025-05\CRED2'
+mes_ano = datetime.now().strftime("%m%Y")
+
+# Configurações do Chrome
+chrome_prefs = {
+    "printing.print_preview_sticky_settings.appState": json.dumps({
+        "recentDestinations": [{
+            "id": "Save as PDF",
+            "origin": "local",
+            "account": ""
+        }],
+        "selectedDestinationId": "Save as PDF",
+        "version": 2
+    }),
+    "savefile.default_directory": pasta_destino
+}
+
+options = webdriver.ChromeOptions()
+options.add_experimental_option("prefs", chrome_prefs)
+options.add_argument("--kiosk-printing")
+options.add_argument("--start-maximized")
+
+# Inicia navegador
+service = Service(ChromeDriverManager().install())
+navegador = None
+
+def clicar_com_segurança(elemento):
+    for tentativa in range(3):
+        try:
+            elemento.click()
+            return
+        except (ElementClickInterceptedException, StaleElementReferenceException):
+            time.sleep(2)
+    try:
+        navegador.execute_script("arguments[0].click();", elemento)
+    except:
+        print("❌ Elemento não pôde ser clicado nem via JS.")
+
+try:
+    navegador = webdriver.Chrome(service=service, options=options)
+    wait = WebDriverWait(navegador, 30)
+    navegador.get("https://efisco.sefaz.pe.gov.br/sfi_com_sca/PRMontarMenuAcesso")
+    time.sleep(3)
+
+    certificado = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="btt_certificado"]/span')))
+    clicar_com_segurança(certificado)
+    time.sleep(30)
+
+    tributario = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="nav_topo"]/li[1]/a')))
+    clicar_com_segurança(tributario)
+    time.sleep(4)
+
+    credenciamento = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="100002"]')))
+    clicar_com_segurança(credenciamento)
+    time.sleep(4)
+
+    consultas_cadastrais = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="fmw_id_sidebar_100025"]/span[1]')))
+    clicar_com_segurança(consultas_cadastrais)
+    time.sleep(3)
+
+    dados_identificacao = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="fmw_id_sidebar_190082"]/span')))
+    clicar_com_segurança(dados_identificacao)
+    time.sleep(3)
+
+    documento = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="primeiro_campo"]')))
+    clicar_com_segurança(documento)
+    time.sleep(2)
+
+    cnpj = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="primeiro_campo"]/option[3]')))
+    clicar_com_segurança(cnpj)
+    time.sleep(2)
+
+    for linha in base_sheet.iter_rows(min_row=3, max_row=80):
+        razao = str(linha[1].value).strip().replace("/", "-").replace("\\", "-")
+        cnpj_valor = str(linha[4].value).strip()
+        nome_arquivo = f"{razao}-CRED2-{mes_ano}.pdf"
+        caminho_arquivo_final = os.path.join(pasta_destino, nome_arquivo)
+
+        cnpj_input = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="nuDocumentoIdentificacao"]')))
+        cnpj_input.click()
+        time.sleep(1)
+        cnpj_input.send_keys(Keys.CONTROL + "a", Keys.BACKSPACE)
+        cnpj_input.send_keys(cnpj_valor)
+        time.sleep(2)
+
+        localizar = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="btt_localizar"]')))
+        clicar_com_segurança(localizar)
+        time.sleep(4)
+
+        # Trata alertas de "Nenhum registro"
+        try:
+            WebDriverWait(navegador, 4).until(EC.alert_is_present())
+            alerta = navegador.switch_to.alert
+            print(f"⚠️ Alerta: {alerta.text}")
+            alerta.accept()
+            print("⏩ CNPJ sem dados. Indo para o próximo.")
+            time.sleep(2)
+            continue
+        except:
+            pass
+
+        detalhar = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="btt_detalhar"]')))
+        clicar_com_segurança(detalhar)
+        time.sleep(5)
+
+        if os.path.exists(caminho_arquivo_final):
+            os.remove(caminho_arquivo_final)
+
+        navegador.execute_script("window.print();")
+        print(f"🖨 Imprimindo para: {nome_arquivo}")
+        time.sleep(10)
+
+        ultimo_pdf = None
+        for _ in range(25):
+            arquivos_pdf = glob.glob(os.path.join(pasta_destino, "*.pdf"))
+            if arquivos_pdf:
+                ultimo_pdf = max(arquivos_pdf, key=os.path.getctime)
+                if os.path.exists(ultimo_pdf):
+                    break
+            time.sleep(1)
+
+        if ultimo_pdf and os.path.exists(ultimo_pdf):
+            try:
+                os.rename(ultimo_pdf, caminho_arquivo_final)
+                print(f"✔ PDF salvo como: {nome_arquivo}")
+            except Exception as e:
+                print(f"❌ Falha ao renomear: {e}")
+        else:
+            print("❌ Nenhum PDF encontrado para renomear.")
+
+        # Botão 'Desistir' com retry
+        for tentativa in range(3):
+            try:
+                btn_desistir = wait.until(EC.presence_of_element_located((By.XPATH, '//*[@id="btt_desistir"]')))
+                wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="btt_desistir"]')))
+                clicar_com_segurança(btn_desistir)
+                print("↩️ Retornou para nova consulta.")
+                time.sleep(3)
+                break
+            except StaleElementReferenceException:
+                print(f"🔁 Tentando novamente 'Desistir'... ({tentativa+1}/3)")
+                time.sleep(3)
+            except Exception as e:
+                print(f"❌ Falha ao clicar em 'Desistir': {e}")
+                break
+
+except Exception as e:
+    print(f"🚨 Erro geral: {e}")
+    navegador.save_screenshot("erro_geral.png")
+finally:
+    if navegador:
+        navegador.quit()
